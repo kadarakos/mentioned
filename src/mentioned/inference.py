@@ -89,11 +89,13 @@ class MentionDetectorPipeline:
     def __init__(self, model, tokenizer, threshold: float = 0.5):
         """
         Args:
-            model: The InferenceMentionDetector (PyTorch or ONNX Session)
+            model: The LitMentionDetector (LightningModule)
             tokenizer: The PreTrainedTokenizer
-            threshold: Probability threshold to consider a mention valid
+            threshold: Probability threshold for both start and span filters
         """
         self.model = model.eval()
+        # Ensure we use the model's device
+        self.device = next(model.parameters()).device
         self.processor = MentionProcessor(tokenizer, model.max_length)
         self.threshold = threshold
 
@@ -103,42 +105,52 @@ class MentionDetectorPipeline:
         Args:
             docs: List of documents (each is a list of words)
         Returns:
-            List of lists containing dicts: {"start": int, "end": int, "score": float}
+            List of lists containing dicts: {"start": int, "end": int, "score": float, "text": str}
         """
         # 1. Preprocess to Tensors
         batch = self.processor(docs)
-        device = next(self.model.parameters()).device
-
-        # Move batch to model device
-        batch = {k: v.to(device) for k, v in batch.items()}
+        # Move batch to the same device as the model
+        batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
 
         # 2. Forward Pass
-        # start_probs: (B, W), end_probs: (B, W, W)
+        # We use the model's encode and forward methods to stay consistent with training
         start_probs, end_probs = self.model(**batch)
-
-        # 3. Post-process: Extract Mentions
+        # 4. Post-process: Extract Mentions per Document
         results = []
         for i in range(len(docs)):
             doc_mentions = []
             doc_len = len(docs[i])
 
-            # We only look at the valid word range for this specific document
-            # end_probs[i] is a (W, W) matrix where [s, e] is the prob of span s->e
-            valid_spans = (end_probs[i][:doc_len, :doc_len] > self.threshold).nonzero()
+            # --- LOGICAL AND GATE ---
+            # Gate 1: Which tokens does the model think are valid starts?
+            is_start = start_probs[i, :doc_len] > self.threshold  # (doc_len,)
+            
+            # Gate 2: Which spans does the model think are valid?
+            is_span = end_probs[i, :doc_len, :doc_len] > self.threshold  # (doc_len, doc_len)
 
-            for span in valid_spans:
-                start_idx = span[0].item()
-                end_idx = span[1].item()
+            # Gate 3: Structural constraint (end index must be >= start index)
+            # Create a boolean upper triangle mask for this specific document length
+            upper_tri = torch.triu(torch.ones((doc_len, doc_len), device=self.device), diagonal=0).bool()
 
-                # Logic: Only valid if end >= start
-                if end_idx >= start_idx:
-                    score = end_probs[i, start_idx, end_idx].item()
-                    doc_mentions.append({
-                        "start": start_idx,
-                        "end": end_idx,
-                        "score": round(score, 4),
-                        "text": " ".join(docs[i][start_idx : end_idx + 1])
-                    })
+            # Combined Gate: Start must be True AND Span must be True AND must be upper triangle
+            # Using unsqueeze(1) broadcasts the (doc_len,) start mask across the rows of the span matrix
+            combined_mask = is_span & is_start.unsqueeze(1) & upper_tri
+
+            # 5. Extract Indices and Scores
+            final_indices = combined_mask.nonzero() # Returns [[start_idx, end_idx], ...]
+
+            for span in final_indices:
+                s_idx, e_idx = span[0].item(), span[1].item()
+                
+                # We use the end_prob score as the representative confidence for the span
+                score = end_probs[i, s_idx, e_idx].item()
+                
+                doc_mentions.append({
+                    "start": s_idx,
+                    "end": e_idx,
+                    "score": round(score, 4),
+                    "text": " ".join(docs[i][s_idx : e_idx + 1])
+                })
 
             results.append(doc_mentions)
 
