@@ -15,28 +15,21 @@ class InferenceMentionDetector(nn.Module):
         Inputs (Tensors):
             input_ids: (B, Seq_Len)
             attention_mask: (B, Seq_Len)
-            word_ids: (B, Seq_Len) -> Word index per token, -1 for special tokens
+            word_ids: (B, Seq_Len) -> Word index per token, -1 padding.
 
         Returns (Tensors):
             start_probs: (B, Num_Words)
             end_probs: (B, Num_Words, Num_Words)
         """
-
-        # 1. Subword-to-Word Pooling (The vectorized logic we wrote earlier)
-        # Returns: (Batch, Num_Words, Hidden_Dim)
+        # B x N x D
         word_embeddings = self.encoder(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            word_ids=word_ids
+            input_ids=input_ids, attention_mask=attention_mask, word_ids=word_ids
         )
-
-        # 2. Mention Detection Logic
-        # Returns: start_logits (B, W), end_logits (B, W, W)
+        # B x N, B x N x N
         start_logits, end_logits = self.mention_detector(word_embeddings)
-
-        # 3. Probabilities for Inference
-        # Applying sigmoid here makes the ONNX model output final scores
+        # B x N
         start_probs = torch.sigmoid(start_logits)
+        # B x N x N
         end_probs = torch.sigmoid(end_logits)
 
         return start_probs, end_probs
@@ -49,13 +42,11 @@ class MentionProcessor:
 
     def __call__(self, docs: list[list[str]]):
         """
-        Converts raw word lists into tensors for the ONNX model.
+        Converts raw word lists into tensors.
         Args:
             docs: List of documents, where each doc is a list of words.
                   Example: [["Hello", "world"], ["Testing", "this"]]
         """
-        # 1. Standard Tokenization
-        # is_split_into_words=True is crucial since your input is list[list[str]]
         inputs = self.tokenizer(
             docs,
             is_split_into_words=True,
@@ -63,30 +54,32 @@ class MentionProcessor:
             truncation=True,
             max_length=self.max_length,
             padding=True,
-            return_attention_mask=True
+            return_attention_mask=True,
         )
 
-        # 2. Map Subwords to Word IDs
         # We need a tensor where each token index maps to its word index.
-        # Special tokens (<s>, </s>, <pad>) are mapped to -1 to be ignored by pooling.
+        # Special tokens (<s>, </s>, <pad>) are mapped to -1.
         batch_word_ids = []
         for i in range(len(docs)):
             # tokenizer.word_ids(i) returns [None, 0, 1, 1, 2, None]
             w_ids = [w if w is not None else -1 for w in inputs.word_ids(batch_index=i)]
             batch_word_ids.append(torch.tensor(w_ids))
-
-        # 3. Stack into a batch tensor (Batch, Seq_Len)
         word_ids_tensor = torch.stack(batch_word_ids)
 
         return {
             "input_ids": inputs["input_ids"],
             "attention_mask": inputs["attention_mask"],
-            "word_ids": word_ids_tensor
+            "word_ids": word_ids_tensor,
         }
 
 
 class MentionDetectorPipeline:
-    def __init__(self, model, tokenizer, threshold: float = 0.5):
+    def __init__(
+        self,
+        model: LitMentionDetector,
+        tokenizer,
+        threshold: float = 0.5,
+    ):
         """
         Args:
             model: The LitMentionDetector (LightningModule)
@@ -94,7 +87,6 @@ class MentionDetectorPipeline:
             threshold: Probability threshold for both start and span filters
         """
         self.model = model.eval()
-        # Ensure we use the model's device
         self.device = next(model.parameters()).device
         self.processor = MentionProcessor(tokenizer, model.max_length)
         self.threshold = threshold
@@ -107,50 +99,41 @@ class MentionDetectorPipeline:
         Returns:
             List of lists containing dicts: {"start": int, "end": int, "score": float, "text": str}
         """
-        # 1. Preprocess to Tensors
         batch = self.processor(docs)
         # Move batch to the same device as the model
-        batch = {k: v.to(self.device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
-
-        # 2. Forward Pass
-        # We use the model's encode and forward methods to stay consistent with training
+        batch = {
+            k: v.to(self.device) if isinstance(v, torch.Tensor) else v
+            for k, v in batch.items()
+        }
         start_probs, end_probs = self.model(**batch)
-        # 4. Post-process: Extract Mentions per Document
+
+        # Extract mentions.
         results = []
         for i in range(len(docs)):
             doc_mentions = []
             doc_len = len(docs[i])
-
-            # --- LOGICAL AND GATE ---
-            # Gate 1: Which tokens does the model think are valid starts?
-            is_start = start_probs[i, :doc_len] > self.threshold  # (doc_len,)
-            
-            # Gate 2: Which spans does the model think are valid?
-            is_span = end_probs[i, :doc_len, :doc_len] > self.threshold  # (doc_len, doc_len)
-
-            # Gate 3: Structural constraint (end index must be >= start index)
-            # Create a boolean upper triangle mask for this specific document length
-            upper_tri = torch.triu(torch.ones((doc_len, doc_len), device=self.device), diagonal=0).bool()
-
-            # Combined Gate: Start must be True AND Span must be True AND must be upper triangle
-            # Using unsqueeze(1) broadcasts the (doc_len,) start mask across the rows of the span matrix
+            is_start = start_probs[i, :doc_len] > self.threshold
+            is_span = end_probs[i, :doc_len, :doc_len] > self.threshold
+            # Causal mask.
+            upper_tri = torch.triu(
+                torch.ones((doc_len, doc_len), device=self.device), diagonal=0
+            ).bool()
+            # Full mask.
             combined_mask = is_span & is_start.unsqueeze(1) & upper_tri
-
-            # 5. Extract Indices and Scores
-            final_indices = combined_mask.nonzero() # Returns [[start_idx, end_idx], ...]
+            final_indices = combined_mask.nonzero()
 
             for span in final_indices:
                 s_idx, e_idx = span[0].item(), span[1].item()
-                
-                # We use the end_prob score as the representative confidence for the span
+                # End prob is interpreted as confidence score.
                 score = end_probs[i, s_idx, e_idx].item()
-                
-                doc_mentions.append({
-                    "start": s_idx,
-                    "end": e_idx,
-                    "score": round(score, 4),
-                    "text": " ".join(docs[i][s_idx : e_idx + 1])
-                })
+                doc_mentions.append(
+                    {
+                        "start": s_idx,
+                        "end": e_idx,
+                        "score": round(score, 4),
+                        "text": " ".join(docs[i][s_idx : e_idx + 1]),
+                    }
+                )
 
             results.append(doc_mentions)
 
@@ -178,8 +161,7 @@ def create_inference_model(repo_id: str, device: str = "cpu"):
     # 3. Wrap the core components into the Inference class
     # This separates the 'training' logic from the 'inference' graph
     inference_model = InferenceMentionDetector(
-        encoder=lit_model.encoder,
-        mention_detector=lit_model.mention_detector
+        encoder=lit_model.encoder, mention_detector=lit_model.mention_detector
     )
 
     # 4. Attach the tokenizer and max_length for the Preprocessor
@@ -196,13 +178,11 @@ def compile_inference_model(model):
 
 
 repo_id = "kadarakos/mention-detector-poc-dry-run"
-inference_model = compile_inference_model(
-    create_inference_model(repo_id)
-)
+inference_model = compile_inference_model(create_inference_model(repo_id))
 pipeline = MentionDetectorPipeline(
     model=inference_model,
     tokenizer=inference_model.tokenizer,
-    threshold=0.6  # Noticed that precision is bad below this (still bad :D).
+    threshold=0.6,  # Noticed that precision is bad below this (still bad :D).
 )
 
 docs = [
@@ -213,7 +193,7 @@ docs = [
     "Apple Inc. and Microsoft are competing in the cloud computing market".split(),
     "New York City is often called the Big Apple".split(),
     "The Great Barrier Reef is the world's largest coral reef system".split(),
-    "Marie Curie was the first woman to win a Nobel Prize".split()
+    "Marie Curie was the first woman to win a Nobel Prize".split(),
 ]
 
 batch_mentions = pipeline.predict(docs)

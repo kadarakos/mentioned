@@ -1,3 +1,5 @@
+"""Dataset preparation code."""
+
 import torch
 
 
@@ -38,7 +40,7 @@ def flatten_to_sentences(batch):
     return new_batch
 
 
-class LitBankStringDataset(Dataset):
+class LitBankMentionDataset(Dataset):
     def __init__(self, hf_dataset):
         self.dataset = hf_dataset
 
@@ -89,20 +91,20 @@ def collate_fn(batch):
 
     # 2D padding for token-pair classification: B x N x N
     spans_padded = torch.stack(spans_list)
-    # 2D length mask (like attention): B x N x 1 & B x 1 x N -> (B, N, N)
+    # 2D length mask: B x N x 1 & B x 1 x N -> (B, N, N)
     valid_len_mask = token_mask.unsqueeze(2) & token_mask.unsqueeze(1)
     # 2. Causal j >= i mask: B x N x N
     upper_tri_mask = torch.triu(
         torch.ones((max_len, max_len), dtype=torch.bool),
         diagonal=0,
     )
-    # Mask all positions that are not corresponding to a start token: (B X N X 1)
+    # Mask all not start token positions: (B X N X 1)
     is_start_mask = starts_padded.unsqueeze(2).bool()
     # Full mask is "and"ing all masks together (like attention): B x N x N
     span_loss_mask = valid_len_mask & upper_tri_mask & is_start_mask
 
     return {
-        "sentences": sentences,
+        "sentences": sentences,  # list[list[str]]
         "starts": starts_padded,  # (B, N) - Targets for start classifier
         "spans": spans_padded,  # (B, N, N) - Targets for span classifier
         "token_mask": token_mask,  # (B, N) - For 1D loss
@@ -110,9 +112,12 @@ def collate_fn(batch):
     }
 
 
-def make_litbank() -> tuple[DataLoader, DataLoader, DataLoader]:
+def make_litbank(
+    repo_id: str = "coref-data/litbank_raw",
+    tag: str = "split_0",
+) -> tuple[DataLoader, DataLoader, DataLoader]:
     """Reformat litbank to as a sentence-level mention-detection dataset."""
-    litbank = load_dataset("coref-data/litbank_raw", "split_0")
+    litbank = load_dataset(repo_id, tag)
     litbank_sentences_mentions = litbank.map(mentions_by_sentence).map(
         flatten_to_sentences, batched=True, remove_columns=litbank["train"].column_names
     )
@@ -123,9 +128,9 @@ def make_litbank() -> tuple[DataLoader, DataLoader, DataLoader]:
         if mentions is None or len(mentions) == 0:
             no += 1
     print(f"Training sentences without mentions: {no}.")
-    train = LitBankStringDataset(litbank_sentences_mentions["train"])
-    val = LitBankStringDataset(litbank_sentences_mentions["validation"])
-    test = LitBankStringDataset(litbank_sentences_mentions["test"])
+    train = LitBankMentionDataset(litbank_sentences_mentions["train"])
+    val = LitBankMentionDataset(litbank_sentences_mentions["validation"])
+    test = LitBankMentionDataset(litbank_sentences_mentions["test"])
     train_loader = DataLoader(train, batch_size=4, shuffle=True, collate_fn=collate_fn)
     val_loader = DataLoader(val, batch_size=4, shuffle=False, collate_fn=collate_fn)
     test_loader = DataLoader(test, batch_size=4, shuffle=False, collate_fn=collate_fn)
