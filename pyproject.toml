@@ -1,0 +1,27 @@
+[project]
+name = "mentioned"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+authors = [
+    { name = "kadarakos", email = "kadar.akos@gmail.com" }
+]
+requires-python = ">=3.12"
+dependencies = [
+    "datasets>=4.6.0",
+    "huggingface-hub>=1.4.1",
+    "lightning>=2.6.1",
+    "torch>=2.10.0",
+    "torchmetrics>=1.8.2",
+    "transformers>=5.2.0",
+    "wandb>=0.25.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.9.9,<0.10.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "ruff>=0.15.2",
+]
