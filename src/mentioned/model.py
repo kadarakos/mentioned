@@ -1,10 +1,10 @@
 import torch
 import torchmetrics
 
-
 from transformers import AutoTokenizer, AutoModel
 from huggingface_hub import PyTorchModelHubMixin
 from lightning import LightningModule
+
 
 class ModelRegistry:
     _registry = {}

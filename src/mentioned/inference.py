@@ -1,7 +1,12 @@
+import os
+import onnxruntime as ort
+
 import torch
 import torch.nn as nn
+import numpy as np
 
-from mentioned.model import make_model_v1, LitMentionDetector
+from mentioned.model import ModelRegistry, LitMentionDetector
+import onnxruntime as ort
 
 
 class InferenceMentionDetector(nn.Module):
@@ -23,7 +28,9 @@ class InferenceMentionDetector(nn.Module):
         """
         # B x N x D
         word_embeddings = self.encoder(
-            input_ids=input_ids, attention_mask=attention_mask, word_ids=word_ids
+            input_ids=input_ids,
+            attention_mask=attention_mask,
+            word_ids=word_ids
         )
         # B x N, B x N x N
         start_logits, end_logits = self.mention_detector(word_embeddings)
@@ -73,80 +80,66 @@ class MentionProcessor:
         }
 
 
-class MentionDetectorPipeline:
-    def __init__(
-        self,
-        model: LitMentionDetector,
-        tokenizer,
-        threshold: float = 0.5,
-    ):
-        """
-        Args:
-            model: The LitMentionDetector (LightningModule)
-            tokenizer: The PreTrainedTokenizer
-            threshold: Probability threshold for both start and span filters
-        """
-        self.model = model.eval()
-        self.device = next(model.parameters()).device
-        self.processor = MentionProcessor(tokenizer, model.max_length)
+class ONNXMentionDetectorPipeline:
+    def __init__(self, model_path: str, tokenizer, threshold: float = 0.5):
+        # 1. Load the ONNX session
+        # 'CPUExecutionProvider' is perfect for HF Space free tier
+        self.session = ort.InferenceSession(
+            model_path,
+            providers=['CPUExecutionProvider']
+        )
+        self.tokenizer = tokenizer
+        # We still use your existing MentionProcessor for the tokenization math
+        self.processor = MentionProcessor(tokenizer)
         self.threshold = threshold
 
-    @torch.no_grad()
     def predict(self, docs: list[list[str]]):
-        """
-        Args:
-            docs: List of documents (each is a list of words)
-        Returns:
-            List of lists containing dicts: {"start": int, "end": int, "score": float, "text": str}
-        """
         batch = self.processor(docs)
-        # Move batch to the same device as the model
-        batch = {
-            k: v.to(self.device) if isinstance(v, torch.Tensor) else v
-            for k, v in batch.items()
+        onnx_inputs = {
+            "input_ids": batch["input_ids"].numpy(),
+            "attention_mask": batch["attention_mask"].numpy(),
+            "word_ids": batch["word_ids"].numpy()
         }
-        start_probs, end_probs = self.model(**batch)
+        start_probs, end_probs = self.session.run(None, onnx_inputs)
 
-        # Extract mentions.
+        # 5. Extraction Logic (Numpy version)
         results = []
         for i in range(len(docs)):
             doc_mentions = []
             doc_len = len(docs[i])
+            # Slice to actual word length and apply threshold
             is_start = start_probs[i, :doc_len] > self.threshold
             is_span = end_probs[i, :doc_len, :doc_len] > self.threshold
-            # Causal mask.
-            upper_tri = torch.triu(
-                torch.ones((doc_len, doc_len), device=self.device), diagonal=0
-            ).bool()
-            # Full mask.
-            combined_mask = is_span & is_start.unsqueeze(1) & upper_tri
-            final_indices = combined_mask.nonzero()
+            # Causal mask (j >= i) using numpy
+            upper_tri = np.triu(np.ones((doc_len, doc_len), dtype=bool))
+            # Find indices where (start is true) AND (span is true) AND (end >= start)
+            combined_mask = is_span & is_start[:, None] & upper_tri
+            final_indices = np.argwhere(combined_mask)
 
-            for span in final_indices:
-                s_idx, e_idx = span[0].item(), span[1].item()
-                # End prob is interpreted as confidence score.
-                score = end_probs[i, s_idx, e_idx].item()
-                doc_mentions.append(
-                    {
-                        "start": s_idx,
-                        "end": e_idx,
-                        "score": round(score, 4),
-                        "text": " ".join(docs[i][s_idx : e_idx + 1]),
-                    }
-                )
-
+            for s_idx, e_idx in final_indices:
+                score = end_probs[i, s_idx, e_idx]
+                doc_mentions.append({
+                    "start": int(s_idx),
+                    "end": int(e_idx),
+                    "score": round(float(score), 4),
+                    "text": " ".join(docs[i][s_idx : e_idx + 1]),
+                })
             results.append(doc_mentions)
 
         return results
 
 
-def create_inference_model(repo_id: str, device: str = "cpu"):
+def create_inference_model(
+    repo_id: str,
+    model_factory: str,
+    device: str = "cpu",
+):
     """
     Factory to load a trained model from HF Hub and wrap it for ONNX/Inference.
     """
     # 1. Load the Lightning model (with its weights)
     # Note: Ensure LitMentionDetector is defined in your scope
-    fresh_model = make_model_v1()
+    fresh_model = ModelRegistry.get(model_factory)()
     lit_model = LitMentionDetector.from_pretrained(
         repo_id,
         tokenizer=fresh_model.tokenizer,
@@ -172,32 +165,76 @@ def create_inference_model(repo_id: str, device: str = "cpu"):
     return inference_model.eval()
 
 
-# TODO
-def compile_inference_model(model):
-    return model
+def compile_inference_model(model, output_dir="model_v1_onnx"):
+    """ONNX export with dynamic axes for."""
+    model.eval()
+    os.makedirs(output_dir, exist_ok=True)
+    model.tokenizer.save_pretrained(output_dir)
+    onnx_path = os.path.join(output_dir, "model.onnx")
+    dynamic_axes = {
+        "input_ids":      {0: "batch", 1: "sequence"},
+        "attention_mask": {0: "batch", 1: "sequence"},
+        "word_ids":       {0: "batch", 1: "sequence"},
+        "start_probs":    {0: "batch", 1: "num_words"},
+        "end_probs":      {0: "batch", 1: "num_words", 2: "num_words"}
+    }
+
+    # Dummy inputs as before
+    dummy_inputs = (
+        torch.randint(0, 100, (1, 16), dtype=torch.long),
+        torch.ones((1, 16), dtype=torch.long),
+        torch.arange(16, dtype=torch.long).unsqueeze(0)
+    )
+
+    print("🚀 Re-exporting with legacy engine (dynamo=False)...")
+    
+    torch.onnx.export(
+        model,
+        dummy_inputs,
+        onnx_path,
+        export_params=True,
+        opset_version=17, # Use 17 for maximum compatibility with legacy mode
+        do_constant_folding=True,
+        input_names=["input_ids", "attention_mask", "word_ids"],
+        output_names=["start_probs", "end_probs"],
+        dynamic_axes=dynamic_axes,
+        dynamo=False  # <--- FORCE THE OLD, STABLE EXPORTER
+    )
+    print(f"✅ Exported to {output_dir}! Checking dimensions...")
+
+    # Verification:
+    sess = ort.InferenceSession(onnx_path)
+    for input_meta in sess.get_inputs():
+        print(f"Input '{input_meta.name}' shape: {input_meta.shape}")
 
 
-repo_id = "kadarakos/mention-detector-poc-dry-run"
-inference_model = compile_inference_model(create_inference_model(repo_id))
-pipeline = MentionDetectorPipeline(
-    model=inference_model,
-    tokenizer=inference_model.tokenizer,
-    threshold=0.6,  # Noticed that precision is bad below this (still bad :D).
-)
+if __name__ == "__main__":
+    repo_id = "kadarakos/mention-detector-poc-dry-run"
+    model_factory = "model_v1"
+    inference_model_path = "model_v1_onnx"
+    inference_model = create_inference_model(repo_id, model_factory)
+    compile_inference_model(inference_model, inference_model_path)
+    pipeline = ONNXMentionDetectorPipeline(
+        model_path=os.path.join(inference_model_path, "model.onnx"),
+        tokenizer=inference_model.tokenizer,
+        # XXX Sweet spot for this examples on this model, found by hand
+        threshold=0.3,
+    )
+    docs = [
+        "Does this model actually work?".split(),
+        "The name of the mage is Bubba.".split(),
+        "It was quite a sunny day when the model finally started working.".split(),
+        "Albert Einstein was a theoretical physicist who developed the theory of relativity".split(),
+        "Apple Inc. and Microsoft are competing in the cloud computing market".split(),
+        "New York City is often called the Big Apple".split(),
+        "The Great Barrier Reef is the world's largest coral reef system".split(),
+        "Marie Curie was the first woman to win a Nobel Prize".split(),
+    ]
 
-docs = [
-    "Does this model actually work?".split(),
-    "The name of the mage is Bubba.".split(),
-    "It was quite a sunny day when the model finally started working.".split(),
-    "Albert Einstein was a theoretical physicist who developed the theory of relativity".split(),
-    "Apple Inc. and Microsoft are competing in the cloud computing market".split(),
-    "New York City is often called the Big Apple".split(),
-    "The Great Barrier Reef is the world's largest coral reef system".split(),
-    "Marie Curie was the first woman to win a Nobel Prize".split(),
-]
-
-batch_mentions = pipeline.predict(docs)
-for i, mentions in enumerate(batch_mentions):
-    print(docs[i])
-    for mention in mentions:
-        print(mention["text"])
+    batch_mentions = pipeline.predict(docs)
+    for i, mentions in enumerate(batch_mentions):
+        print(" ".join(docs[i]))
+        preds = []
+        for mention in mentions:
+            preds.append(mention["text"])
+        print(preds)
