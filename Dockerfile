@@ -21,4 +21,4 @@ RUN uv run python -m nltk.downloader punkt punkt_tab
 ENV PORT=7860
 EXPOSE 7860
 
-CMD ["uv", "run", "python", "-m", "uvicorn mentioned.app:app", "--host", "0.0.0.0", "--port", "7860"]
+CMD ["uv", "run", "python", "-m", "uvicorn", "mentioned.app:app", "--host", "0.0.0.0", "--port", "7860"]
