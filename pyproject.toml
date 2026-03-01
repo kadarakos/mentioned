@@ -40,3 +40,12 @@ where = ["src"]
 
 [tool.uv]
 package = true
+
+[tool.uv.scripts]
+# Define your "source of truth" commands here
+lint = "ruff check ."
+format-check = "ruff format --check ."
+type-check = "mypy ."
+test = "pytest --cov=mentioned"
+# You can even combine them into one 'ci' command for local use
+check-all = "uv run lint && uv run format-check && uv run type-check && uv run test"
