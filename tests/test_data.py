@@ -1,12 +1,18 @@
 import pytest
 import torch
 from torch.utils.data import DataLoader
+from unittest.mock import patch
 from mentioned.data import (
     mentions_by_sentence,
     flatten_to_sentences,
     LitBankMentionDataset,
     collate_fn,
     make_litbank,
+    extract_spans_from_bio,
+    flatten_entities,
+    LitBankEntityDataset,
+    entity_collate_fn,
+    make_litbank_entity,
 )
 
 # --- FIXTURES ---
@@ -34,6 +40,92 @@ def mock_flattened_data():
 
 
 # --- UNIT TESTS ---
+
+def test_extract_spans_from_bio_simple():
+    sentence = [
+        {"token": "John", "bio_tags": ["B-PER"]},
+        {"token": "Smith", "bio_tags": ["I-PER"]},
+        {"token": "works", "bio_tags": ["O"]},
+        {"token": "at", "bio_tags": ["O"]},
+        {"token": "Google", "bio_tags": ["B-ORG"]},
+    ]
+
+    spans, labels = extract_spans_from_bio(sentence)
+
+    # inclusive indexing
+    assert spans == [(0, 1), (4, 4)]
+    assert labels == ["PER", "ORG"]
+
+
+def test_extract_spans_handles_single_token_entity():
+    sentence = [
+        {"token": "Paris", "bio_tags": ["B-LOC"]},
+        {"token": "is", "bio_tags": ["O"]},
+    ]
+
+    spans, labels = extract_spans_from_bio(sentence)
+
+    assert spans == [(0, 0)]
+    assert labels == ["LOC"]
+
+
+def test_litbank_entity_dataset_getitem():
+    fake_dataset = [
+        {
+            "sentence": ["John", "works"],
+            "entity_spans": [(0, 1)],
+            "entity_labels": ["PER"],
+        }
+    ]
+
+    ds = LitBankEntityDataset(fake_dataset)
+    item = ds[0]
+
+    assert item["sentence"] == ["John", "works"]
+    assert torch.equal(item["starts"], torch.tensor([1, 0]))
+    assert item["entity_spans"] == [(0, 1)]
+    assert item["entity_labels"] == ["PER"]
+    assert item["task_id"] == 1
+
+
+
+def test_flatten_entities():
+    batch = {
+        "entities": [
+            [  # document 1
+                [
+                    {"token": "John", "bio_tags": ["B-PER"]},
+                    {"token": "Smith", "bio_tags": ["I-PER"]},
+                ]
+            ]
+        ]
+    }
+
+    output = flatten_entities(batch)
+
+    assert output["sentence"] == [["John", "Smith"]]
+    assert output["entity_spans"] == [[(0, 1)]]
+    assert output["entity_labels"] == [["PER"]]
+
+
+def test_entity_collate_fn_basic():
+    batch = [
+        {
+            "sentence": ["John", "works"],
+            "starts": torch.tensor([1, 0]),
+            "entity_spans": [(0, 1)],
+            "entity_labels": ["PER"],
+            "task_id": 1,
+        }
+    ]
+
+    output = entity_collate_fn(batch)
+
+    assert output["starts"].shape == (1, 2)
+    assert output["spans"].shape == (1, 2, 2)
+    assert output["spans"][0, 0, 1] == 1
+    assert output["gold_labels"][0] == {(0, 1): "PER"}
+    assert output["task_id"].shape == (1,)
 
 
 def test_mentions_by_sentence_grouping(mock_raw_example):
@@ -121,3 +213,86 @@ def test_make_litbank_integration():
         assert isinstance(batch["spans"], torch.Tensor)
     except Exception as e:
         pytest.fail(f"Integration test failed: {e}")
+
+
+@patch("mentioned.data.load_dataset")
+def test_make_litbank_entity(mock_load_dataset):
+
+    # -----------------------------
+    # Fake HF split
+    # -----------------------------
+    class FakeSplit(list):
+        @property
+        def column_names(self):
+            return list(self[0].keys()) if self else []
+
+    # -----------------------------
+    # Fake HF dataset dict
+    # -----------------------------
+    class DummyDataset(dict):
+        def map(self, fn, batched=False, remove_columns=None):
+            mapped = {}
+
+            for split_name, split_data in self.items():
+                if not split_data:
+                    mapped[split_name] = FakeSplit([])
+                    continue
+
+                if batched:
+                    batch = {
+                        "entities": [item["entities"] for item in split_data]
+                    }
+
+                    result = fn(batch)
+
+                    new_split = []
+                    for i in range(len(result["sentence"])):
+                        new_split.append({
+                            "sentence": result["sentence"][i],
+                            "entity_spans": result["entity_spans"][i],
+                            "entity_labels": result["entity_labels"][i],
+                        })
+
+                    mapped[split_name] = FakeSplit(new_split)
+                else:
+                    mapped[split_name] = FakeSplit(split_data)
+
+            return DummyDataset(mapped)
+
+    # -----------------------------
+    # Fake data
+    # -----------------------------
+    fake_data = DummyDataset({
+        "train": FakeSplit([
+            {
+                "entities": [
+                    [
+                        {"token": "John", "bio_tags": ["B-PER"]},
+                        {"token": "Smith", "bio_tags": ["I-PER"]},
+                    ]
+                ]
+            }
+        ]),
+        "validation": FakeSplit([]),
+        "test": FakeSplit([]),
+    })
+
+    mock_load_dataset.return_value = fake_data
+
+    # -----------------------------
+    # Run function
+    # -----------------------------
+    train_loader, val_loader, test_loader = make_litbank_entity()
+
+    batch = next(iter(train_loader))
+    print(batch)
+    # -----------------------------
+    # Assertions
+    # -----------------------------
+    assert "starts" in batch
+    assert "spans" in batch
+    assert "gold_labels" in batch
+
+    # ensure entity span is present
+    assert batch["spans"].sum() > 0
+    assert batch["gold_labels"][0] == {(0, 1): "PER"}
