@@ -1,0 +1,79 @@
+name: CI Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  ci:
+    runs-on: ubuntu-latest
+
+    steps:
+      # -----------------------------
+      # Checkout repository
+      # -----------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # -----------------------------
+      # Setup Python 3.12
+      # -----------------------------
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.12
+
+      # -----------------------------
+      # Install UV and project + dev deps
+      # -----------------------------
+      - name: Install project + dev deps via UV
+        run: |
+          python -m pip install --upgrade pip
+          pip install "uv_build>=0.9.9,<0.10.0" uv[dev]
+
+      # -----------------------------
+      # Linting & formatting
+      # -----------------------------
+      - name: Lint with ruff
+        run: uv ruff check .
+
+      - name: Format check with black
+        run: uv black --check .
+
+      # -----------------------------
+      # Type checking
+      # -----------------------------
+      - name: Type check with mypy
+        run: uv mypy .
+
+      # -----------------------------
+      # Run tests with coverage
+      # -----------------------------
+      - name: Run pytest with coverage
+        run: uv pytest --cov=mentioned
+
+      # -----------------------------
+      # Extract total coverage
+      # -----------------------------
+      - name: Extract total coverage
+        run: |
+          TOTAL_COV=$(coverage report | grep TOTAL | awk '{print int($4)}')
+          echo "TOTAL_COV=$TOTAL_COV" >> $GITHUB_ENV
+
+      # -----------------------------
+      # Push coverage tag
+      # -----------------------------
+      - name: Push coverage tag
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@github.com"
+          TAG_NAME="coverage-${TOTAL_COV}%"
+          if ! git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
+            git tag -a "$TAG_NAME" -m "Coverage $TOTAL_COV%"
+            git push origin "$TAG_NAME"
+          else
+            echo "Tag $TAG_NAME already exists, skipping"
