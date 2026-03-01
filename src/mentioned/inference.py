@@ -83,7 +83,8 @@ class ONNXMentionDetectorPipeline:
         # 1. Load the ONNX session
         # 'CPUExecutionProvider' is perfect for HF Space free tier
         self.session = ort.InferenceSession(
-            model_path, providers=["CPUExecutionProvider"]
+            model_path,
+            providers=['CPUExecutionProvider']
         )
         self.tokenizer = tokenizer
         # We still use your existing MentionProcessor for the tokenization math
@@ -95,7 +96,7 @@ class ONNXMentionDetectorPipeline:
         onnx_inputs = {
             "input_ids": batch["input_ids"].numpy(),
             "attention_mask": batch["attention_mask"].numpy(),
-            "word_ids": batch["word_ids"].numpy(),
+            "word_ids": batch["word_ids"].numpy()
         }
         start_probs, end_probs = self.session.run(None, onnx_inputs)
 
@@ -115,14 +116,12 @@ class ONNXMentionDetectorPipeline:
 
             for s_idx, e_idx in final_indices:
                 score = end_probs[i, s_idx, e_idx]
-                doc_mentions.append(
-                    {
-                        "start": int(s_idx),
-                        "end": int(e_idx),
-                        "score": round(float(score), 4),
-                        "text": " ".join(docs[i][s_idx : e_idx + 1]),
-                    }
-                )
+                doc_mentions.append({
+                    "start": int(s_idx),
+                    "end": int(e_idx),
+                    "score": round(float(score), 4),
+                    "text": " ".join(docs[i][s_idx : e_idx + 1]),
+                })
             results.append(doc_mentions)
 
         return results
@@ -171,18 +170,18 @@ def compile_inference_model(model, output_dir="model_v1_onnx"):
     model.tokenizer.save_pretrained(output_dir)
     onnx_path = os.path.join(output_dir, "model.onnx")
     dynamic_axes = {
-        "input_ids": {0: "batch", 1: "sequence"},
+        "input_ids":      {0: "batch", 1: "sequence"},
         "attention_mask": {0: "batch", 1: "sequence"},
-        "word_ids": {0: "batch", 1: "sequence"},
-        "start_probs": {0: "batch", 1: "num_words"},
-        "end_probs": {0: "batch", 1: "num_words", 2: "num_words"},
+        "word_ids":       {0: "batch", 1: "sequence"},
+        "start_probs":    {0: "batch", 1: "num_words"},
+        "end_probs":      {0: "batch", 1: "num_words", 2: "num_words"}
     }
 
     # Dummy inputs as before
     dummy_inputs = (
         torch.randint(0, 100, (1, 16), dtype=torch.long),
         torch.ones((1, 16), dtype=torch.long),
-        torch.arange(16, dtype=torch.long).unsqueeze(0),
+        torch.arange(16, dtype=torch.long).unsqueeze(0)
     )
 
     print("🚀 Re-exporting with legacy engine (dynamo=False)...")
@@ -192,12 +191,12 @@ def compile_inference_model(model, output_dir="model_v1_onnx"):
         dummy_inputs,
         onnx_path,
         export_params=True,
-        opset_version=17,  # Use 17 for maximum compatibility with legacy mode
+        opset_version=17, # Use 17 for maximum compatibility with legacy mode
         do_constant_folding=True,
         input_names=["input_ids", "attention_mask", "word_ids"],
         output_names=["start_probs", "end_probs"],
         dynamic_axes=dynamic_axes,
-        dynamo=False,  # <--- FORCE THE OLD, STABLE EXPORTER
+        dynamo=False  # <--- FORCE THE OLD, STABLE EXPORTER
     )
     print(f"✅ Exported to {output_dir}! Checking dimensions...")
 

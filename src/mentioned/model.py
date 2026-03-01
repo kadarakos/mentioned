@@ -14,7 +14,6 @@ class ModelRegistry:
         def decorator(func):
             cls._registry[name] = func
             return func
-
         return decorator
 
     @classmethod
@@ -255,7 +254,7 @@ class LitMentionDetector(LightningModule, PyTorchModelHubMixin):
         all_results = []
         thresh = self.hparams.threshold
         for i in range(0, len(sentences), batch_size):
-            batch_sentences = sentences[i : i + batch_size]
+            batch_sentences = sentences[i:i + batch_size]
             emb = self.encode(batch_sentences)
             start_logits, end_logits = self.forward(emb)
             is_start = torch.sigmoid(start_logits) > thresh
