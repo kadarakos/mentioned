@@ -33,21 +33,16 @@ jobs:
           python -m pip install --upgrade pip
           pip install "uv_build>=0.9.9,<0.10.0" uv[dev]
 
-      # -----------------------------
-      # Linting & formatting
-      # -----------------------------
+      # Linting
       - name: Lint with ruff
-        run: uv ruff check .
+        run: ruff check .
 
       - name: Format check with black
-        run: uv black --check .
+        run: black --check .
 
-      # -----------------------------
       # Type checking
-      # -----------------------------
       - name: Type check with mypy
-        run: uv mypy .
-
+        run: mypy .
       # -----------------------------
       # Run tests with coverage
       # -----------------------------
