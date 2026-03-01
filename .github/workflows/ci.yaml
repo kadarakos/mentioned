@@ -11,63 +11,52 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # -----------------------------
-      # Checkout repository
-      # -----------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
       # -----------------------------
-      # Setup UV and Python 3.12
+      # Setup UV with Global Cache
       # -----------------------------
       - name: Install uv
         uses: astral-sh/setup-uv@v5
         with:
+          # This caches the uv cache directory and virtualenv
           enable-cache: true
+          cache-dependency-glob: "uv.lock"
           python-version: '3.12'
 
       - name: Install dependencies
+        # 'uv sync' is very fast if the cache is hot
         run: uv sync --all-extras --dev
 
       # -----------------------------
-      # Linting & Formatting
+      # Quality Checks (Running via uv)
       # -----------------------------
-      - name: Lint with ruff
-        run: uv run ruff check .
+      - name: Lint & Format
+        run: |
+          uv run ruff check .
+          uv run ruff format --check .
 
-      - name: Format check with ruff
-        run: uv run ruff format --check .
-
-      - name: Type check with mypy
+      - name: Type check
         run: uv run mypy .
 
       # -----------------------------
-      # Run tests with coverage
+      # Testing & Coverage
       # -----------------------------
-      - name: Run pytest with coverage
+      - name: Run tests with coverage
         run: uv run pytest --cov=mentioned
 
-      # -----------------------------
-      # Extract total coverage
-      # -----------------------------
-      - name: Extract total coverage
-        run: |
-          # Use uv run to ensure coverage tool is found
-          TOTAL_COV=$(uv run coverage report | grep TOTAL | awk '{print int($4)}')
-          echo "TOTAL_COV=$TOTAL_COV" >> $GITHUB_ENV
-
-      # -----------------------------
-      # Push coverage tag
-      # -----------------------------
-      - name: Push coverage tag
+      - name: Extract & Tag Coverage
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          TOTAL_COV=$(uv run coverage report | grep TOTAL | awk '{print int($4)}')
+          echo "TOTAL_COV=$TOTAL_COV" >> $GITHUB_ENV
+          
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           TAG_NAME="coverage-${TOTAL_COV}%"
           
-          # Check if tag exists locally or on remote
           if ! git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
             git tag -a "$TAG_NAME" -m "Coverage $TOTAL_COV%"
             git push origin "$TAG_NAME"
