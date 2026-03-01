@@ -15,46 +15,45 @@ jobs:
       # Checkout repository
       # -----------------------------
       - name: Checkout repository
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       # -----------------------------
-      # Setup Python 3.12
+      # Setup UV and Python 3.12
       # -----------------------------
-      - name: Setup Python 3.12
-        uses: actions/setup-python@v4
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
         with:
-          python-version: 3.12
+          enable-cache: true
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
 
       # -----------------------------
-      # Install UV and project + dev deps
+      # Linting & Formatting
       # -----------------------------
-      - name: Install project + dev deps via UV
-        run: |
-          python -m pip install --upgrade pip
-          pip install "uv_build>=0.9.9,<0.10.0" uv[dev]
-
-      # Linting
       - name: Lint with ruff
-        run: ruff check .
+        run: uv run ruff check .
 
-      - name: Format check with black
-        run: black --check .
+      - name: Format check with ruff
+        run: uv run ruff format --check .
 
-      # Type checking
       - name: Type check with mypy
-        run: mypy .
+        run: uv run mypy .
+
       # -----------------------------
       # Run tests with coverage
       # -----------------------------
       - name: Run pytest with coverage
-        run: uv pytest --cov=mentioned
+        run: uv run pytest --cov=mentioned
 
       # -----------------------------
       # Extract total coverage
       # -----------------------------
       - name: Extract total coverage
         run: |
-          TOTAL_COV=$(coverage report | grep TOTAL | awk '{print int($4)}')
+          # Use uv run to ensure coverage tool is found
+          TOTAL_COV=$(uv run coverage report | grep TOTAL | awk '{print int($4)}')
           echo "TOTAL_COV=$TOTAL_COV" >> $GITHUB_ENV
 
       # -----------------------------
@@ -67,8 +66,12 @@ jobs:
           git config user.name "github-actions"
           git config user.email "github-actions@github.com"
           TAG_NAME="coverage-${TOTAL_COV}%"
+          
+          # Check if tag exists locally or on remote
           if ! git rev-parse "$TAG_NAME" >/dev/null 2>&1; then
             git tag -a "$TAG_NAME" -m "Coverage $TOTAL_COV%"
             git push origin "$TAG_NAME"
           else
             echo "Tag $TAG_NAME already exists, skipping"
+          fi
+
