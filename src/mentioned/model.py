@@ -14,6 +14,7 @@ class ModelRegistry:
         def decorator(func):
             cls._registry[name] = func
             return func
+
         return decorator
 
     @classmethod
@@ -44,10 +45,7 @@ class SentenceEncoder(torch.nn.Module):
             attention_mask: B x N
             word_ids: B x N
         """
-        outputs = self.encoder(
-            input_ids=input_ids,
-            attention_mask=attention_mask
-        )
+        outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
         subword_embeddings = outputs.last_hidden_state  # B x N x D
         num_words = word_ids.max() + 1
         word_mask = word_ids.unsqueeze(-1) == torch.arange(
@@ -62,24 +60,6 @@ class SentenceEncoder(torch.nn.Module):
         # (B, W, D)
         word_embeddings = word_sums / subword_counts
         return word_embeddings
-
-
-class SwiGLU(torch.nn.Module):
-    def __init__(self, dim: int, hidden_dim: int = None):
-        super().__init__()
-        # Common expansion factor
-        if hidden_dim is None:
-            hidden_dim = 2 * dim
-        self.w1 = torch.nn.Linear(dim, hidden_dim)
-        self.w3 = torch.nn.Linear(dim, hidden_dim)
-        self.w2 = torch.nn.Linear(hidden_dim, dim)
-        self.silu = torch.nn.SiLU()
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        gate = self.silu(self.w1(x))
-        x = gate * self.w3(x)
-        x = self.w2(x)
-        return x
 
 
 class Detector(torch.nn.Module):
@@ -275,7 +255,7 @@ class LitMentionDetector(LightningModule, PyTorchModelHubMixin):
         all_results = []
         thresh = self.hparams.threshold
         for i in range(0, len(sentences), batch_size):
-            batch_sentences = sentences[i:i + batch_size]
+            batch_sentences = sentences[i : i + batch_size]
             emb = self.encode(batch_sentences)
             start_logits, end_logits = self.forward(emb)
             is_start = torch.sigmoid(start_logits) > thresh

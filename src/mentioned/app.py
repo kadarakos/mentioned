@@ -28,7 +28,6 @@ def setup_nltk():
             nltk.download(res)
 
 
-
 class TextRequest(BaseModel):
     texts: List[str]
 
@@ -36,12 +35,12 @@ class TextRequest(BaseModel):
 MODEL_CONFIDENCE = Histogram(
     "mention_detector_confidence",
     "Distribution of prediction confidence scores",
-    buckets=[0.1, 0.3, 0.5, 0.7, 0.8, 0.9, 1.0]
+    buckets=[0.1, 0.3, 0.5, 0.7, 0.8, 0.9, 1.0],
 )
 MENTIONS_PER_DOC = Histogram(
     "mention_detector_density",
     "Number of mentions detected per document",
-    buckets=[0, 1, 2, 5, 10, 20, 50]
+    buckets=[0, 1, 2, 5, 10, 20, 50],
 )
 REPO_ID = os.getenv("REPO_ID", "kadarakos/mention-detector-poc-dry-run")
 ENGINE_DIR = "engine"
@@ -70,6 +69,7 @@ async def lifespan(app: FastAPI):
     state["pipeline"] = ONNXMentionDetectorPipeline(MODEL_PATH, tokenizer)
     yield
     state.clear()
+
 
 app = FastAPI(lifespan=lifespan)
 Instrumentator().instrument(app).expose(app)
