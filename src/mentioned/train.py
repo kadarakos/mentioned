@@ -19,6 +19,7 @@ def train(
     val_interval: int = 1000,
     stop_criterion: str = "val_f1_mention",
     max_epochs: int | None = None,
+    **kwargs,
 ):
     if max_epochs is None:
         max_epochs = 999
@@ -54,6 +55,7 @@ def train(
         val_check_interval=val_interval,
         callbacks=[early_stopper, best_checkpoint],
         logger=wandb_logger,
+        **kwargs,
     )
     print(f"Starting Trainer for {max_epochs} epochs.")
     trainer.fit(
