@@ -221,6 +221,7 @@ def collate_fn(batch):
         "spans": spans_padded,  # (B, N, N) - Targets for span classifier
         "token_mask": token_mask,  # (B, N) - For 1D loss
         "span_loss_mask": span_loss_mask,  # (B, N, N) - For 2D loss
+        "task_id": torch.tensor([item["task_id"] for item in batch]),
     }
 
 
