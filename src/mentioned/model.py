@@ -290,52 +290,62 @@ class LitMentionDetector(LightningModule, PyTorchModelHubMixin):
         token_mask = batch["token_mask"].bool()
         span_loss_mask = batch["span_loss_mask"].bool()
         
-        # 2. SHARED PREDICTIONS
+        # 2. SHARED EXTRACTION (SIGMOID + THRESHOLD)
         is_start = (torch.sigmoid(start_logits) > self.hparams.threshold).int()
         is_end = (torch.sigmoid(end_logits) > self.hparams.threshold).int()
         
+        # Masking logic for valid spans (Upper Triangle + Within Bounds)
         valid_pair_mask = token_mask.unsqueeze(2) & token_mask.unsqueeze(1)
         upper_tri = torch.triu(torch.ones_like(end_logits), diagonal=0).bool()
         mention_eval_mask = valid_pair_mask & upper_tri
         
+        # Extract flattened predictions and targets
         pred_spans = (is_start.unsqueeze(2) & is_end)[mention_eval_mask]
         target_spans = batch["spans"][mention_eval_mask].int()
 
-        # Base log dictionary for every step
-        log_stats = {
-            "val_loss": self._compute_start_loss(start_logits, batch) + self._compute_end_loss(end_logits, batch)
-        }
+        # Dictionary to collect logs for this batch
+        log_stats = {}
 
-        # 3. TASK-SPECIFIC UPDATES
+        # 3. TASK 0: GENERIC MENTIONS
         if batch["task_id"][0] == 0:
-            # Task 0: Generic Mentions
-            self.val_f1_start.update(is_start[token_mask], batch["starts"][token_mask].int())
-            self.val_f1_end.update(is_end[span_loss_mask], batch["spans"][span_loss_mask].int())
-            self.val_f1_mention.update(pred_spans, target_spans)
+            # Safety check: only update if there are actually elements in the masked tensor
+            if token_mask.any():
+                self.val_f1_start.update(is_start[token_mask], batch["starts"][token_mask].int())
             
-            # Add to logs
+            if span_loss_mask.any():
+                self.val_f1_end.update(is_end[span_loss_mask], batch["spans"][span_loss_mask].int())
+            
+            if mention_eval_mask.any():
+                self.val_f1_mention.update(pred_spans, target_spans)
+                
             log_stats["val_f1_mention"] = self.val_f1_mention
 
+        # 4. TASK 1: ENTITIES
         elif batch["task_id"][0] == 1:
-            # Task 1: Entities (Detector Side)
-            self.val_f1_entity_start.update(is_start[token_mask], batch["starts"][token_mask].int())
-            self.val_f1_entity_end.update(is_end[span_loss_mask], batch["spans"][span_loss_mask].int())
-            self.val_f1_entity_mention.update(pred_spans, target_spans)
+            # Update detector metrics for the entity task
+            if token_mask.any():
+                self.val_f1_entity_start.update(is_start[token_mask], batch["starts"][token_mask].int())
             
+            if span_loss_mask.any():
+                self.val_f1_entity_end.update(is_end[span_loss_mask], batch["spans"][span_loss_mask].int())
+                
+            if mention_eval_mask.any():
+                self.val_f1_entity_mention.update(pred_spans, target_spans)
+                
             log_stats["val_f1_entity_mention"] = self.val_f1_entity_mention
 
-            # Task 1: Entities (Labeler Side) - Only if labeler exists
+            # Labeler Classification (on Gold Spans)
             if self.mention_labeler is not None:
                 entity_logits = self.forward_labeler(emb)
-                
-                # Gold-span classification for debugging
                 gold_preds, gold_targets = [], []
+                
                 for b, labels_dict in enumerate(batch["gold_labels"]):
                     for (s, e), label_str in labels_dict.items():
                         if s < entity_logits.size(1) and e < entity_logits.size(2):
                             gold_preds.append(torch.argmax(entity_logits[b, s, e], dim=-1))
                             gold_targets.append(self.label2id[label_str])
                 
+                # Final safety check for the labeler
                 if gold_targets:
                     self.val_f1_entity_labels.update(
                         torch.stack(gold_preds), 
@@ -343,7 +353,12 @@ class LitMentionDetector(LightningModule, PyTorchModelHubMixin):
                     )
                     log_stats["val_f1_entity_labels"] = self.val_f1_entity_labels
 
-        # 4. FINAL CONDITIONAL LOGGING
+        # 5. LOGGING
+        # Compute base loss for every batch regardless of task
+        loss_start = self._compute_start_loss(start_logits, batch)
+        loss_end = self._compute_end_loss(end_logits, batch)
+        log_stats["val_loss"] = loss_start + loss_end
+        
         self.log_dict(log_stats, prog_bar=True, on_epoch=True, batch_size=len(batch["sentences"]))
 
     @torch.no_grad()
