@@ -41,6 +41,7 @@ def dummy_batch():
         "spans": torch.zeros((B, N, N), dtype=torch.long),
         "token_mask": torch.ones((B, N), dtype=torch.bool),
         "span_loss_mask": torch.ones((B, N, N), dtype=torch.bool),
+        "task_id": [0, 0],
     }
 
 
@@ -106,7 +107,6 @@ def test_training_step_integration(mock_components, dummy_batch):
     """Verify training_step returns a valid loss tensor."""
     tokenizer, encoder, mention_det = mock_components
     model = LitMentionDetector(tokenizer, encoder, mention_det)
-
     # Mock encode to return a fixed tensor
     model.encode = MagicMock(return_value=torch.randn(2, 4, 128))
 

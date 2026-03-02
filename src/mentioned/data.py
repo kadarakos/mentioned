@@ -4,19 +4,49 @@ import torch
 
 
 from collections import defaultdict
+from dataclasses import dataclass
 
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import Dataset, DataLoader
-from lightning import LightningDataModule
 from datasets import load_dataset
 
 
-class LitBankDataModule(LightningDataModule):
-    def setup(self, stage=None):
-        # Scan the dataset for all unique labels
-        unique_labels = sorted(list(set(label for item in self.train_ds for label in item["entity_labels"])))
-        self.label_to_id = {label: i + 1 for i, label in enumerate(unique_labels)}
-        self.label_to_id["O"] = 0  # Background class
+class DataRegistry:
+    _registry = {}
+
+    @classmethod
+    def register(cls, name):
+        def decorator(func):
+            cls._registry[name] = func
+            return func
+        return decorator
+
+    @classmethod
+    def get(cls, name):
+        return cls._registry[name]
+
+
+@dataclass
+class DataBlob:
+    train_loader: DataLoader
+    dev_loader: DataLoader
+    test_loader: DataLoader
+    label2id: dict[int, str] | None = None
+
+
+def build_label_mapping(loader: DataLoader):
+    idx = 0
+    label_to_id = {"O": idx}
+    for batch in loader:
+        for item in batch:
+            labels = batch["gold_labels"]
+            for annotation in labels:
+                if annotation:
+                    label = list(annotation.values())[0]
+                    if label not in label_to_id:
+                        idx += 1
+                        label_to_id[label] = idx
+    return label_to_id
 
 
 class LitBankEntityDataset(Dataset):
@@ -73,6 +103,7 @@ class LitBankMentionDataset(Dataset):
             "tokens": tokens,
             "starts": starts,
             "span_labels": span_labels,
+            "task_id": 0,
         }
 
 
@@ -267,9 +298,11 @@ def debug_print_entity_batch(batch):
             print(f"    - [{label}] '{entity_text}' (indices: {start}:{end})")
 
 
+@DataRegistry.register("litbank_mentions")
 def make_litbank(
     repo_id: str = "coref-data/litbank_raw",
     tag: str = "split_0",
+    batch_size: int = 4,
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
     """Reformat litbank to as a sentence-level mention-detection dataset."""
     litbank = load_dataset(repo_id, tag)
@@ -283,23 +316,26 @@ def make_litbank(
         if mentions is None or len(mentions) == 0:
             no += 1
     print(f"Training sentences without mentions: {no}.")
+    bs = batch_size
     train = LitBankMentionDataset(litbank_sentences_mentions["train"])
     val = LitBankMentionDataset(litbank_sentences_mentions["validation"])
     test = LitBankMentionDataset(litbank_sentences_mentions["test"])
-    train_loader = DataLoader(train, batch_size=4, shuffle=True, collate_fn=collate_fn)
-    val_loader = DataLoader(val, batch_size=4, shuffle=False, collate_fn=collate_fn)
-    test_loader = DataLoader(test, batch_size=4, shuffle=False, collate_fn=collate_fn)
+    train_loader = DataLoader(train, batch_size=bs, shuffle=True, collate_fn=collate_fn)
+    val_loader = DataLoader(val, batch_size=bs, shuffle=False, collate_fn=collate_fn)
+    test_loader = DataLoader(test, batch_size=bs, shuffle=False, collate_fn=collate_fn)
     # Sanity check
     try:
         next(iter(train_loader))
     except Exception as e:
         raise e
-    return train_loader, val_loader, test_loader
+    return DataBlob(train_loader, val_loader, test_loader)
 
 
+@DataRegistry.register("litbank_entities")
 def make_litbank_entity(
     repo_id: str = "coref-data/litbank_raw",
     tag: str = "split_0",
+    batch_size: int = 4,
 ) -> tuple[DataLoader, DataLoader, DataLoader]:
     litbank = load_dataset(repo_id, tag)
     entities_data = litbank.map(
@@ -307,14 +343,16 @@ def make_litbank_entity(
         batched=True,
         remove_columns=litbank["train"].column_names
     )
+    bs = batch_size
     train = LitBankEntityDataset(entities_data["train"])
     val = LitBankEntityDataset(entities_data["validation"])
     test = LitBankEntityDataset(entities_data["test"])
-    train_loader = DataLoader(train, batch_size=4, shuffle=True, collate_fn=entity_collate_fn)
-    val_loader = DataLoader(val, batch_size=4, shuffle=False, collate_fn=entity_collate_fn)
-    test_loader = DataLoader(test, batch_size=4, shuffle=False, collate_fn=entity_collate_fn)
+    train_loader = DataLoader(train, batch_size=bs, shuffle=True, collate_fn=entity_collate_fn)
+    val_loader = DataLoader(val, batch_size=bs, shuffle=False, collate_fn=entity_collate_fn)
+    test_loader = DataLoader(test, batch_size=bs, shuffle=False, collate_fn=entity_collate_fn)
     try:
         next(iter(train_loader))
     except Exception as e:
         raise e
-    return train_loader, val_loader, test_loader
+    label2id = build_label_mapping(train_loader)
+    return DataBlob(train_loader, val_loader, test_loader, label2id)

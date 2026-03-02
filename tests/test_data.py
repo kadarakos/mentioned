@@ -205,8 +205,8 @@ def test_out_of_bounds_guard():
 def test_make_litbank_integration():
     """Check if the real pipeline loads and provides a valid batch."""
     try:
-        train_loader, _, _ = make_litbank(tag="split_0")
-        batch = next(iter(train_loader))
+        data = make_litbank(tag="split_0")
+        batch = next(iter(data.train_loader))
 
         assert "sentences" in batch
         assert "span_loss_mask" in batch
@@ -282,9 +282,9 @@ def test_make_litbank_entity(mock_load_dataset):
     # -----------------------------
     # Run function
     # -----------------------------
-    train_loader, val_loader, test_loader = make_litbank_entity()
+    data = make_litbank_entity()
 
-    batch = next(iter(train_loader))
+    batch = next(iter(data.train_loader))
     print(batch)
     # -----------------------------
     # Assertions
