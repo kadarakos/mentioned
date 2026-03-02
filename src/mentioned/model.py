@@ -51,7 +51,7 @@ class SentenceEncoder(torch.nn.Module):
         word_mask = word_ids.unsqueeze(-1) == torch.arange(
             num_words, device=word_ids.device
         )
-        word_mask = word_mask.float()  # (B, S, W)
+        word_mask = word_mask.to(subword_embeddings.dtype)
         # Sum embeddings for each word: (B, W, S) @ (B, S, D) -> (B, W, D)
         word_sums = torch.bmm(word_mask.transpose(1, 2), subword_embeddings)
         # Count subwords per word to get the denominator
