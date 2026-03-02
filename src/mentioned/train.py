@@ -17,6 +17,7 @@ def train(
     encoder_id: str = "distilroberta-base",
     patience: int = 5,
     val_interval: int = 1000,
+    stop_criterion: str = "val_f1_mention",
 ):
     data = DataRegistry.get(data_factory)()
     model = ModelRegistry.get(model_factory)(data, encoder_id)
@@ -26,14 +27,14 @@ def train(
     )
     # Save only the best model for the PoC purposes.
     best_checkpoint = ModelCheckpoint(
-        monitor="val_f1_mention",
+        monitor=stop_criterion,
         mode="max",
         save_top_k=1,
-        filename="best-mention-f1",
+        filename=f"best-{stop_criterion}",
         verbose=True,
     )
     early_stopper = EarlyStopping(
-        monitor="val_f1_mention",
+        monitor=stop_criterion,
         min_delta=0.01,
         patience=patience,
         verbose=True,
