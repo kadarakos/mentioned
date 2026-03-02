@@ -29,7 +29,7 @@ class DataRegistry:
 @dataclass
 class DataBlob:
     train_loader: DataLoader
-    dev_loader: DataLoader
+    val_loader: DataLoader
     test_loader: DataLoader
     label2id: dict[int, str] | None = None
 
