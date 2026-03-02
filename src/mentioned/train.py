@@ -6,7 +6,7 @@ from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning import Trainer
 
 from mentioned.model import LitMentionDetector, ModelRegistry
-from mentions.data import DataRegistry
+from mentioned.data import DataRegistry
 
 
 def train(
