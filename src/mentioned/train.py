@@ -1,5 +1,5 @@
 import wandb
-
+import torch
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.callbacks import ModelCheckpoint
@@ -18,14 +18,20 @@ def train(
     patience: int = 5,
     val_interval: int = 1000,
     stop_criterion: str = "val_f1_mention",
+    max_epochs: int | None = None,
 ):
+    if max_epochs is None:
+        max_epochs = 999
+    # 1. Data and Model Architecture Setup
     data = DataRegistry.get(data_factory)()
     model = ModelRegistry.get(model_factory)(data, encoder_id)
+    
     wandb_logger = WandbLogger(
         project=project_name,
         name=encoder_id,
     )
-    # Save only the best model for the PoC purposes.
+
+    # 2. Callbacks for Training
     best_checkpoint = ModelCheckpoint(
         monitor=stop_criterion,
         mode="max",
@@ -33,6 +39,7 @@ def train(
         filename=f"best-{stop_criterion}",
         verbose=True,
     )
+    
     early_stopper = EarlyStopping(
         monitor=stop_criterion,
         min_delta=0.01,
@@ -40,13 +47,15 @@ def train(
         verbose=True,
         mode="max",
     )
+
+    # 3. Training Execution
     trainer = Trainer(
+        max_epochs=max_epochs,      # Now configurable
         val_check_interval=val_interval,
-        check_val_every_n_epoch=None,
         callbacks=[early_stopper, best_checkpoint],
         logger=wandb_logger,
     )
-    print("Starting Trainer.")
+    print(f"Starting Trainer for {max_epochs} epochs.")
     trainer.fit(
         model=model,
         train_dataloaders=data.train_loader,
@@ -54,24 +63,32 @@ def train(
     )
     trainer.test(dataloaders=data.test_loader, ckpt_path="best", weights_only=False)
     print(f"Pushing best model to: {repo_id}")
-    fresh_model = ModelRegistry.get(model_factory)(data, encoder_id)
+    fresh_bundle = ModelRegistry.get(model_factory)(data, encoder_id)
+    labeler = getattr(fresh_bundle, "mention_labeler", None)
+    l2id = getattr(fresh_bundle, "label2id", None)
+
     best_model = LitMentionDetector.load_from_checkpoint(
         trainer.checkpoint_callback.best_model_path,
-        tokenizer=fresh_model.tokenizer,
-        encoder=fresh_model.encoder,
-        mention_detector=fresh_model.mention_detector,
+        tokenizer=fresh_bundle.tokenizer,
+        encoder=fresh_bundle.encoder,
+        mention_detector=fresh_bundle.mention_detector,
+        label2id=l2id,
+        mention_labeler=labeler,
         weights_only=False,
     )
     best_model.push_to_hub(repo_id, private=True)
     wandb.finish()
 
-    print("Testing pulling and evaluating the model.")
-    fresh_model = ModelRegistry.get(model_factory)(data, encoder_id)
+    # 6. Verification: Pull from Hub and Test
+    print("Verifying Hub upload by pulling and re-evaluating...")
     remote_model = LitMentionDetector.from_pretrained(
         repo_id,
-        tokenizer=fresh_model.tokenizer,
-        encoder=fresh_model.encoder,
-        mention_detector=fresh_model.mention_detector,
+        tokenizer=fresh_bundle.tokenizer,
+        encoder=fresh_bundle.encoder,
+        mention_detector=fresh_bundle.mention_detector,
+        label2id=l2id,
+        mention_labeler=labeler,
     )
+
     verify_trainer = Trainer(accelerator="auto", logger=False)
     verify_trainer.test(model=remote_model, dataloaders=data.test_loader)
