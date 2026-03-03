@@ -1,5 +1,4 @@
 import wandb
-import torch
 from lightning.pytorch.loggers import WandbLogger
 from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.callbacks import ModelCheckpoint
@@ -19,20 +18,15 @@ def train(
     val_interval: int = 1000,
     stop_criterion: str = "val_f1_mention",
     max_epochs: int | None = None,
-    **kwargs,
 ):
     if max_epochs is None:
-        max_epochs = 999
-    # 1. Data and Model Architecture Setup
+        max_epochs = 1000
     data = DataRegistry.get(data_factory)()
     model = ModelRegistry.get(model_factory)(data, encoder_id)
-    
     wandb_logger = WandbLogger(
         project=project_name,
         name=encoder_id,
     )
-
-    # 2. Callbacks for Training
     best_checkpoint = ModelCheckpoint(
         monitor=stop_criterion,
         mode="max",
@@ -40,7 +34,6 @@ def train(
         filename=f"best-{stop_criterion}",
         verbose=True,
     )
-    
     early_stopper = EarlyStopping(
         monitor=stop_criterion,
         min_delta=0.01,
@@ -48,14 +41,12 @@ def train(
         verbose=True,
         mode="max",
     )
-
-    # 3. Training Execution
     trainer = Trainer(
         max_epochs=max_epochs,      # Now configurable
         val_check_interval=val_interval,
         callbacks=[early_stopper, best_checkpoint],
         logger=wandb_logger,
-        **kwargs,
+        accelerator="auto",
     )
     print(f"Starting Trainer for {max_epochs} epochs.")
     trainer.fit(
@@ -81,7 +72,6 @@ def train(
     best_model.push_to_hub(repo_id, private=True)
     wandb.finish()
 
-    # 6. Verification: Pull from Hub and Test
     print("Verifying Hub upload by pulling and re-evaluating...")
     remote_model = LitMentionDetector.from_pretrained(
         repo_id,
