@@ -1,23 +1,21 @@
 FROM prom/prometheus:v2.45.0
-
-# In the official Prometheus image, 'envsubst' is usually NOT installed,
-# but 'sh' is. We will use a simple 'sed' command instead of 'envsubst' 
-# to avoid needing 'apk' or 'root' access.
-
 USER root
-# Create the directory and ensure the prometheus user (built-in) owns it
+
+# Create directory with correct permissions for the prometheus user (65534)
 RUN mkdir -p /prometheus && chown -R 65534:65534 /prometheus
 
 # Copy the template
 COPY prometheus.yml.template /etc/prometheus/prometheus.yml.template
 
-# Switch back to the prometheus user (ID 65534 is standard for this image)
+# Reset the entrypoint so we can run a shell script
+ENTRYPOINT []
+
+# Switch to the prometheus user
 USER 65534
 
-# Use 'sed' to replace the variable. It's pre-installed on almost every Linux.
-# This avoids needing to install 'gettext' via apk.
+# Now we can safely run /bin/sh to process our template with sed
 CMD ["/bin/sh", "-c", "\
-    sed \"s/\${HF_TOKEN}/$HF_TOKEN/g\" /etc/prometheus/prometheus.yml.template > /etc/prometheus/prometheus.yml && \
+    sed \"s|\\${HF_TOKEN}|$HF_TOKEN|g\" /etc/prometheus/prometheus.yml.template > /etc/prometheus/prometheus.yml && \
     /bin/prometheus --config.file=/etc/prometheus/prometheus.yml \
     --storage.tsdb.path=/prometheus \
     --web.listen-address=:7860"]
