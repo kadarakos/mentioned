@@ -1,15 +1,24 @@
---
-title: Mentioned
-emoji: 🦀
+---
+title: Labeled
+emoji: 🏷️
 colorFrom: blue
-colorTo: yellow
+colorTo: indigo
 sdk: docker
+app_port: 7860
 pinned: false
-license: mit
-short_description: Mentions
 ---
 
+# Mention Detector & Entity Labeler
+
+This Space runs a FastAPI server inside a Docker container using `uv`.
+
+### API Endpoints
+- **Predict**: `POST /predict`
+- **Metrics**: `GET /metrics` (Prometheus format)
+- **Docs**: `GET /docs` (Swagger UI)
+
 Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
+
 
 ```bash
 curl -X POST \
