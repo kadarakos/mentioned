@@ -1,20 +1,24 @@
 FROM prom/prometheus:v2.45.0
+
+# In the official Prometheus image, 'envsubst' is usually NOT installed,
+# but 'sh' is. We will use a simple 'sed' command instead of 'envsubst' 
+# to avoid needing 'apk' or 'root' access.
+
 USER root
+# Create the directory and ensure the prometheus user (built-in) owns it
+RUN mkdir -p /prometheus && chown -R 65534:65534 /prometheus
 
-# Prometheus is Alpine-based, so use 'apk' instead of 'apt-get'
-# We install 'gettext' to get the 'envsubst' command
-RUN apk add --no-cache gettext
-
-# Fix permissions for HF (User 1000)
-RUN mkdir -p /prometheus && chown -R 1000:1000 /prometheus
-USER 1000
-
-# Copy the template (subtree puts this at the root)
+# Copy the template
 COPY prometheus.yml.template /etc/prometheus/prometheus.yml.template
 
-# Inject HF_TOKEN and start
+# Switch back to the prometheus user (ID 65534 is standard for this image)
+USER 65534
+
+# Use 'sed' to replace the variable. It's pre-installed on almost every Linux.
+# This avoids needing to install 'gettext' via apk.
 CMD ["/bin/sh", "-c", "\
-    envsubst < /etc/prometheus/prometheus.yml.template > /etc/prometheus/prometheus.yml && \
+    sed \"s/\${HF_TOKEN}/$HF_TOKEN/g\" /etc/prometheus/prometheus.yml.template > /etc/prometheus/prometheus.yml && \
     /bin/prometheus --config.file=/etc/prometheus/prometheus.yml \
     --storage.tsdb.path=/prometheus \
     --web.listen-address=:7860"]
+
