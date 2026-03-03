@@ -136,22 +136,20 @@ class ONNXMentionDetectorPipeline:
         for i in range(len(docs)):
             doc_mentions = []
             doc_len = len(docs[i])
-            # Slice to actual word length and apply threshold
             is_start = start_probs[i, :doc_len] > self.threshold
             is_span = end_probs[i, :doc_len, :doc_len] > self.threshold
-            # Causal mask (j >= i) using numpy
             upper_tri = np.triu(np.ones((doc_len, doc_len), dtype=bool))
-            # Find indices where (start is true) AND (span is true) AND (end >= start)
             combined_mask = is_span & is_start[:, None] & upper_tri
             final_indices = np.argwhere(combined_mask)
 
             for s_idx, e_idx in final_indices:
+                # XXX Considering end-prob as mention score!
                 score = end_probs[i, s_idx, e_idx]
                 doc_mentions.append({
                     "start": int(s_idx),
                     "end": int(e_idx),
                     "score": round(float(score), 4),
-                    "text": " ".join(docs[i][s_idx : e_idx + 1]),
+                    "text": " ".join(docs[i][s_idx:e_idx + 1]),
                 })
             results.append(doc_mentions)
 
@@ -186,21 +184,15 @@ class ONNXMentionLabelerPipeline:
         for i in range(len(docs)):
             doc_mentions = []
             doc_len = len(docs[i])
-            
-            # Masking logic (same as detector)
             is_start = start_probs[i, :doc_len] > self.threshold
             is_span = end_probs[i, :doc_len, :doc_len] > self.threshold
             upper_tri = np.triu(np.ones((doc_len, doc_len), dtype=bool))
-            
             combined_mask = is_span & is_start[:, None] & upper_tri
             final_indices = np.argwhere(combined_mask)
 
             for s_idx, e_idx in final_indices:
-                # 1. Get detection score
+                # XXX Considering end-prob as score!
                 det_score = float(end_probs[i, s_idx, e_idx])
-                
-                # 2. Get Label info (Argmax over the class dimension)
-                # label_probs[i, s, e] is a vector of size [Num_Classes]
                 class_probs = label_probs[i, s_idx, e_idx]
                 label_id = int(np.argmax(class_probs))
                 label_score = float(class_probs[label_id])
