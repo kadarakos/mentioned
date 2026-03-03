@@ -1,0 +1,8 @@
+scrape_configs:
+  - job_name: 'entity-labeler'
+    metrics_path: '/metrics'
+    scheme: 'https'
+    static_configs:
+      - targets: ['kadarakos-labeled.hf.space']
+    authorization:
+      credentials: '${HF_TOKEN}'
