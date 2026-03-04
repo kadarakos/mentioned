@@ -5,8 +5,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 
-from mentioned.model import ModelRegistry, LitMentionDetector
-from mentioned.data import DataRegistry
+from mentioned.model import ModelRegistry, LitMentionDetector, get_config
 
 
 class InferenceMentionDetector(nn.Module):
@@ -214,29 +213,27 @@ def create_inference_model(
     repo_id: str,
     encoder_id: str,
     model_factory: str,
-    data_factory: str,
     device: str = "cpu",
 ):
     """
     Factory to load a trained model from HF Hub and wrap it for ONNX/Inference.
     """
-    data = DataRegistry.get(data_factory)()
-    fresh_bundle = ModelRegistry.get(model_factory)(data, encoder_id)
+    config = get_config(repo_id)
+    label2id = config["label2id"]
+    fresh_bundle = ModelRegistry.get(model_factory)(model_name=encoder_id, num_classes=len(label2id))
     labeler = getattr(fresh_bundle, "mention_labeler", None)
-    l2id = getattr(fresh_bundle, "label2id", None)
 
     lit_model = LitMentionDetector.from_pretrained(
         repo_id,
         tokenizer=fresh_bundle.tokenizer,
         encoder=fresh_bundle.encoder,
         mention_detector=fresh_bundle.mention_detector,
-        label2id=l2id,
         mention_labeler=labeler,
-        # weights_only=False,
     )
+    l2id = lit_model.label2id
     lit_model.to(device)
     lit_model.eval()
-    if l2id is not None:
+    if len(l2id) > 0:
         id2l = {v: k for k, v in l2id.items()}
         inference_model = InferenceMentionLabeler(
             encoder=lit_model.encoder,
@@ -348,12 +345,7 @@ if __name__ == "__main__":
     inference_model_path = "model_v2_onnx"
     repo_id = "kadarakos/entity-labeler-poc"
     encoder_id = "distilroberta-base"
-    inference_model = create_inference_model(
-        repo_id,
-        encoder_id,
-        model_factory,
-        data_factory,
-    )
+    inference_model = create_inference_model(repo_id, encoder_id, model_factory)
     if isinstance(inference_model, InferenceMentionDetector):
         compile_detector(inference_model, inference_model_path)
         pipeline = ONNXMentionDetectorPipeline(
@@ -363,7 +355,6 @@ if __name__ == "__main__":
             threshold=0.3,
         )
     else:
-        print(inference_model)
         compile_labeler(inference_model, inference_model_path)
         pipeline = ONNXMentionLabelerPipeline(
             model_path=os.path.join(inference_model_path, "model.onnx"),
@@ -371,7 +362,6 @@ if __name__ == "__main__":
             threshold=0.5,
             id2label=inference_model.id2label,
         )
-    print("FUCK")
     docs = [
         "Does this model actually work?".split(),
         "The name of the mage is Bubba.".split(),

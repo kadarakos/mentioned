@@ -4,7 +4,7 @@ from lightning.pytorch.callbacks.early_stopping import EarlyStopping
 from lightning.pytorch.callbacks import ModelCheckpoint
 from lightning import Trainer
 
-from mentioned.model import LitMentionDetector, ModelRegistry
+from mentioned.model import LitMentionDetector, ModelRegistry, get_config
 from mentioned.data import DataRegistry
 
 
@@ -56,31 +56,30 @@ def train(
     )
     trainer.test(dataloaders=data.test_loader, ckpt_path="best", weights_only=False)
     print(f"Pushing best model to: {repo_id}")
-    fresh_bundle = ModelRegistry.get(model_factory)(data, encoder_id)
+    label2id = model.label2id
+    fresh_bundle = ModelRegistry.get(model_factory)(model_name=encoder_id, num_classes=len(label2id))
     labeler = getattr(fresh_bundle, "mention_labeler", None)
-    l2id = getattr(fresh_bundle, "label2id", None)
-
     best_model = LitMentionDetector.load_from_checkpoint(
         trainer.checkpoint_callback.best_model_path,
         tokenizer=fresh_bundle.tokenizer,
         encoder=fresh_bundle.encoder,
         mention_detector=fresh_bundle.mention_detector,
-        label2id=l2id,
         mention_labeler=labeler,
         weights_only=False,
     )
     best_model.push_to_hub(repo_id, private=True)
     wandb.finish()
 
-    print("Verifying Hub upload by pulling and re-evaluating...")
+    print("Verifying test results after from_pretrained.")
+    config = get_config(repo_id)
+    label2id = config["label2id"]
+    fresh_bundle = ModelRegistry.get(model_factory)(model_name=encoder_id, num_classes=len(label2id))
     remote_model = LitMentionDetector.from_pretrained(
         repo_id,
         tokenizer=fresh_bundle.tokenizer,
         encoder=fresh_bundle.encoder,
         mention_detector=fresh_bundle.mention_detector,
-        label2id=l2id,
         mention_labeler=labeler,
     )
-
     verify_trainer = Trainer(accelerator="auto", logger=False)
     verify_trainer.test(model=remote_model, dataloaders=data.test_loader)

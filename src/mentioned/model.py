@@ -1,11 +1,14 @@
+import os
+import json
 import torch
 import torchmetrics
 
 from transformers import AutoTokenizer, AutoModel
-from huggingface_hub import PyTorchModelHubMixin
+from huggingface_hub import PyTorchModelHubMixin, hf_hub_download
 from lightning import LightningModule
 
 from mentioned.data import DataBlob
+
 
 class ModelRegistry:
     _registry = {}
@@ -70,6 +73,7 @@ class Detector(torch.nn.Module):
         num_classes: int = 1,
     ):
         super().__init__()
+        self.num_classes = num_classes
         self.net = torch.nn.Sequential(
             torch.nn.Linear(input_dim, hidden_dim),
             torch.nn.ReLU(),
@@ -121,6 +125,10 @@ class MentionLabeler(torch.nn.Module):
         super().__init__()
         self.classifier = classifier
 
+    @property
+    def num_classes(self):
+        return self.classifier.num_classes
+
     def forward(self, emb: torch.Tensor):
         """
         Args:
@@ -137,7 +145,7 @@ class MentionLabeler(torch.nn.Module):
         logits = self.classifier(pair_emb).squeeze(-1)
 
         return logits
-    
+
 
 class LitMentionDetector(LightningModule, PyTorchModelHubMixin):
     def __init__(
@@ -170,7 +178,7 @@ class LitMentionDetector(LightningModule, PyTorchModelHubMixin):
         if mention_labeler is not None:
             if label2id is None:
                 raise ValueError("Need label2id!")
-            num_classes = len(self.label2id)
+            num_classes = self.mention_labeler.num_classes
             self.val_f1_entity_start = torchmetrics.classification.BinaryF1Score()
             self.val_f1_entity_end = torchmetrics.classification.BinaryF1Score()
             self.val_f1_entity_mention = torchmetrics.classification.BinaryF1Score()
@@ -400,8 +408,21 @@ class LitMentionDetector(LightningModule, PyTorchModelHubMixin):
         return torch.optim.AdamW(self.parameters(), lr=self.hparams.lr)
 
 
+def get_config(repo_id_or_path):
+    if os.path.exists(os.path.join(repo_id_or_path, "config.json")):
+        config_file = os.path.join(repo_id_or_path, "config.json")
+    else:
+        config_file = hf_hub_download(repo_id=repo_id_or_path, filename="config.json")
+    with open(config_file, "r") as f:
+        return json.load(f)
+
+
 @ModelRegistry.register("model_v1")
-def make_model_v1(data: DataBlob, model_name="distilroberta-base"):
+def make_model_v1(
+    data: DataBlob | None = None,
+    model_name="distilroberta-base",
+    num_classes: int | None = None,
+):
     dim = 768
     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
     encoder = SentenceEncoder(model_name).train()
@@ -413,15 +434,28 @@ def make_model_v1(data: DataBlob, model_name="distilroberta-base"):
 
 
 @ModelRegistry.register("model_v2")
-def make_model_v2(data: DataBlob, model_name="distilroberta-base"):
-    label2id = data.label2id
+def make_model_v2(
+    data: DataBlob | None = None,
+    model_name="distilroberta-base",
+    num_classes: int | None = None,
+):
+    if data is None and num_classes is None:
+        raise ValueError(
+            "You need to provide either 'data' or 'num_classes'",
+            "to be able to initialize the classifier."
+        )
+    if data is not None:
+        label2id = data.label2id
+        num_classes = data.label2id
+    else:
+        label2id = {}
     dim = 768
     tokenizer = AutoTokenizer.from_pretrained(model_name, use_fast=True)
     encoder = SentenceEncoder(model_name).train()
     encoder.train()
     start_detector = Detector(dim, dim)
     end_detector = Detector(dim * 2, dim)
-    classifier = Detector(dim * 2, dim, num_classes=len(label2id))
+    classifier = Detector(dim * 2, dim, num_classes=num_classes)
     mention_detector = MentionDetectorCore(start_detector, end_detector)
     mention_labeler = MentionLabeler(classifier)
     return LitMentionDetector(
