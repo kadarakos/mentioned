@@ -2,7 +2,7 @@
 
 import torch
 
-
+from typing import Callable
 from collections import defaultdict
 from dataclasses import dataclass
 
@@ -12,17 +12,17 @@ from datasets import load_dataset
 
 
 class DataRegistry:
-    _registry = {}
+    _registry: dict[str, Callable] = {}
 
     @classmethod
-    def register(cls, name):
+    def register(cls, name: str) -> None:
         def decorator(func):
             cls._registry[name] = func
             return func
         return decorator
 
     @classmethod
-    def get(cls, name):
+    def get(cls, name: str) -> Callable:
         return cls._registry[name]
 
 
@@ -34,7 +34,7 @@ class DataBlob:
     label2id: dict[int, str] | None = None
 
 
-def build_label_mapping(loader: DataLoader):
+def build_label_mapping(loader: DataLoader) -> dict[str, int]:
     idx = 0
     label_to_id = {"O": idx}
     for batch in loader:
@@ -50,13 +50,13 @@ def build_label_mapping(loader: DataLoader):
 
 
 class LitBankEntityDataset(Dataset):
-    def __init__(self, hf_dataset):
+    def __init__(self, hf_dataset: Dataset):
         self.dataset = hf_dataset
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.dataset)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> dict:
         item = self.dataset[idx]
         tokens = item["sentence"]
         spans = item["entity_spans"] or []
@@ -77,13 +77,13 @@ class LitBankEntityDataset(Dataset):
 
 
 class LitBankMentionDataset(Dataset):
-    def __init__(self, hf_dataset):
+    def __init__(self, hf_dataset: Dataset):
         self.dataset = hf_dataset
 
-    def __len__(self):
+    def __len__(self) -> int:
         return len(self.dataset)
 
-    def __getitem__(self, idx):
+    def __getitem__(self, idx: int) -> dict:
         item = self.dataset[idx]
         tokens = item["sentence"]
         # The ArrowDataset gives None for [].
@@ -107,7 +107,7 @@ class LitBankMentionDataset(Dataset):
         }
 
 
-def mentions_by_sentence(example):
+def mentions_by_sentence(example: dict) -> dict:
     mentions_per_sentence = defaultdict(list)
     for cluster in example["coref_chains"]:
         for mention in cluster:
@@ -118,7 +118,7 @@ def mentions_by_sentence(example):
     return example
 
 
-def flatten_to_sentences(batch):
+def flatten_to_sentences(batch: dict) -> dict:
     new_batch = {"sentence": [], "mentions": []}
 
     # Ensure we are iterating over the lists in the batch
@@ -137,7 +137,7 @@ def flatten_to_sentences(batch):
     return new_batch
 
 
-def extract_spans_from_bio(sentence_tokens):
+def extract_spans_from_bio(sentence_tokens: list[dict]) -> tuple[list[tuple[int, int]], list[str]]:
     spans = []
     labels = []
     current_span = None
@@ -165,7 +165,8 @@ def extract_spans_from_bio(sentence_tokens):
 
     return spans, labels
 
-def flatten_entities(batch):
+
+def flatten_entities(batch: dict) -> dict:
     new_batch = {
         "sentence": [],
         "entity_spans": [],
@@ -182,7 +183,7 @@ def flatten_entities(batch):
     return new_batch
 
 
-def collate_fn(batch):
+def collate_fn(batch: list[dict]) -> dict:
     sentences = [item["tokens"] for item in batch]
     # Padding up to longest sentence.
     max_len = max(len(s) for s in sentences)
@@ -225,7 +226,7 @@ def collate_fn(batch):
     }
 
 
-def entity_collate_fn(batch):
+def entity_collate_fn(batch: list[dict]) -> dict:
     # 1. Extract tokens using 'sentence' key
     sentences = [item["sentence"] for item in batch]
     max_len = max(len(s) for s in sentences)
@@ -276,7 +277,7 @@ def entity_collate_fn(batch):
     }
 
 
-def debug_print_entity_batch(batch):
+def debug_print_entity_batch(batch: list[dict]) -> None:
     sentences = batch["sentences"]
     gold_labels_list = batch["gold_labels"]
     task_ids = batch["task_id"]
@@ -304,7 +305,7 @@ def make_litbank(
     repo_id: str = "coref-data/litbank_raw",
     tag: str = "split_0",
     batch_size: int = 4,
-) -> tuple[DataLoader, DataLoader, DataLoader]:
+) -> DataBlob:
     """Reformat litbank to as a sentence-level mention-detection dataset."""
     litbank = load_dataset(repo_id, tag)
     litbank_sentences_mentions = litbank.map(mentions_by_sentence).map(
@@ -337,7 +338,7 @@ def make_litbank_entity(
     repo_id: str = "coref-data/litbank_raw",
     tag: str = "split_0",
     batch_size: int = 4,
-) -> tuple[DataLoader, DataLoader, DataLoader]:
+) -> DataBlob:
     litbank = load_dataset(repo_id, tag)
     entities_data = litbank.map(
         flatten_entities,
