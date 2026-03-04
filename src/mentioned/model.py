@@ -41,6 +41,32 @@ class SentenceEncoder(torch.nn.Module):
         self.dim = self.encoder.config.hidden_size
         self.stats = {}
 
+    def scatter_mean_pooling(self, subword_embeddings, word_ids):
+        # subword_embeddings: (B, S, D)
+        # word_ids: (B, S) - word indices, -1 for special tokens
+        B, S, D = subword_embeddings.shape
+        # Use max() + 1, but ensure it is at least 1 for empty sequences
+        num_words = word_ids.max().clamp(min=0) + 1
+        # 1. Create masks and clean indices
+        # ONNX requires indices to be non-negative for scatter operations
+        mask = (word_ids >= 0).unsqueeze(-1)  # (B, S, 1)
+        safe_indices = word_ids.clamp(min=0).unsqueeze(-1).expand(B, S, D)
+        # 2. Sum the embeddings: (B, W, D)
+        # We zero out embeddings of special tokens before adding
+        masked_embeddings = subword_embeddings * mask
+        sum_out = torch.zeros((B, num_words, D), device=subword_embeddings.device, dtype=subword_embeddings.dtype)
+        sum_out.scatter_add_(1, safe_indices, masked_embeddings)
+        # 3. Count the subwords per word: (B, W, D)
+        # We scatter-add '1's for every valid subword
+        count_src = mask.expand(B, S, D).to(subword_embeddings.dtype)
+        count_out = torch.zeros((B, num_words, D), device=subword_embeddings.device, dtype=subword_embeddings.dtype)
+        count_out.scatter_add_(1, safe_indices, count_src)
+        # 4. Divide Sum by Count
+        # Use clamp(min=1) to avoid division by zero for words with no tokens
+        pooled_out = sum_out / count_out.clamp(min=1.0)
+
+        return pooled_out
+
     def forward(self, input_ids, attention_mask, word_ids):
         """
         Args:
@@ -50,6 +76,7 @@ class SentenceEncoder(torch.nn.Module):
         """
         outputs = self.encoder(input_ids=input_ids, attention_mask=attention_mask)
         subword_embeddings = outputs.last_hidden_state  # B x N x D
+        # word_embeddings = self.scatter_mean_pooling(subword_embeddings, word_ids)
         num_words = word_ids.max() + 1
         word_mask = word_ids.unsqueeze(-1) == torch.arange(
             num_words, device=word_ids.device
